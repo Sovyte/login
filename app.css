@@ -1,0 +1,19 @@
+body {
+  margin: 0;
+  padding: 0;
+  font-family: sans-serif;
+  color: white;
+  text-align: center;
+  background: url('https://images.unsplash.com/photo-1503264116251-35a269479413') no-repeat center center fixed;
+  background-size: cover;
+}
+
+button {
+  padding: 10px 20px;
+  font-size: 18px;
+  background: #5865F2;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
