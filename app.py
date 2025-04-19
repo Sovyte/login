@@ -1,84 +1,86 @@
-from flask import Flask, request, redirect, session, jsonify
-from supabase import create_client, Client
-from flask_cors import CORS
 import os
 import requests
+from flask import Flask, redirect, request, session, url_for, render_template
+from dotenv import load_dotenv
 
-app = Flask(__name__)
-CORS(app, supports_credentials=True)
-app.secret_key = "supersecretkey"
+load_dotenv()
 
-# Supabase config
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# Discord OAuth config
+# Load environment variables
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
-REDIRECT_URI = os.getenv("REDIRECT_URI")
+DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
+DISCORD_API_URL = "https://discord.com/api/v10"
 
+app = Flask(__name__)
+app.secret_key = os.urandom(24)  # For secure sessions
+
+# Home page
+@app.route("/")
+def home():
+    return render_template("index.html")
+
+# Login route → Discord OAuth2
 @app.route("/login")
 def login():
-    # Redirect to Discord's OAuth2 authorization page
     return redirect(
-        f"https://discord.com/api/oauth2/authorize?client_id={DISCORD_CLIENT_ID}&redirect_uri={REDIRECT_URI}&response_type=code&scope=identify"
+        f"https://discord.com/oauth2/authorize?client_id={DISCORD_CLIENT_ID}"
+        f"&redirect_uri={DISCORD_REDIRECT_URI}"
+        f"&response_type=code&scope=identify"
     )
 
+# Callback from Discord
 @app.route("/callback")
 def callback():
-    # Handle the OAuth2 callback and fetch the user's Discord info
     code = request.args.get("code")
+    if not code:
+        return "No code provided by Discord", 400
+
+    # Exchange code for access token
     data = {
-        'client_id': DISCORD_CLIENT_ID,
-        'client_secret': DISCORD_CLIENT_SECRET,
-        'grant_type': 'authorization_code',
-        'code': code,
-        'redirect_uri': REDIRECT_URI,
-        'scope': 'identify'
+        "client_id": DISCORD_CLIENT_ID,
+        "client_secret": DISCORD_CLIENT_SECRET,
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": DISCORD_REDIRECT_URI,
+        "scope": "identify"
     }
 
-    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
 
-    # Exchange the authorization code for an access token
-    token_res = requests.post("https://discord.com/api/oauth2/token", data=data, headers=headers)
-    token_json = token_res.json()
-    access_token = token_json.get("access_token")
+    response = requests.post(f"{DISCORD_API_URL}/oauth2/token", data=data, headers=headers)
+    if response.status_code != 200:
+        return "Failed to get token from Discord", 500
 
-    # Fetch the user's Discord information
-    user_res = requests.get("https://discord.com/api/users/@me", headers={"Authorization": f"Bearer {access_token}"})
-    user = user_res.json()
-    user_id = user["id"]
-    username = f"{user['username']}#{user['discriminator']}"
+    access_token = response.json().get("access_token")
+    session["access_token"] = access_token
+    return redirect(url_for("profile"))
 
-    # Check if user exists in Supabase, and increment the login count or create a new entry
-    existing = supabase.table("logins").select("*").eq("discord_id", user_id).execute()
-    if existing.data:
-        # If user exists, update the count
-        supabase.table("logins").update({"count": existing.data[0]["count"] + 1}).eq("discord_id", user_id).execute()
-    else:
-        # If user does not exist, insert a new record
-        supabase.table("logins").insert({"discord_id": user_id, "username": username, "count": 1}).execute()
+# User profile
+@app.route("/profile")
+def profile():
+    if "access_token" not in session:
+        return redirect(url_for("home"))
 
-    # Save the user ID in the session
-    session["user_id"] = user_id
-    return redirect("https://your-vercel-site.vercel.app")  # Replace with your actual frontend URL
+    headers = {
+        "Authorization": f"Bearer {session['access_token']}"
+    }
 
-@app.route("/me")
-def me():
-    # Fetch the logged-in user's information from Supabase
-    user_id = session.get("user_id")
-    if not user_id:
-        return jsonify({"error": "Not logged in"}), 401
-    result = supabase.table("logins").select("*").eq("discord_id", user_id).single().execute()
-    return jsonify(result.data)
+    user_data = requests.get(f"{DISCORD_API_URL}/users/@me", headers=headers).json()
 
-@app.route("/total_logins")
-def total_logins():
-    # Fetch the total login count from all users
-    result = supabase.table("logins").select("count").execute()
-    total = sum([r["count"] for r in result.data]) if result.data else 0
-    return jsonify({"total_logins": total})
+    avatar_url = f"https://cdn.discordapp.com/avatars/{user_data['id']}/{user_data['avatar']}.png"
+    return render_template("profile.html",
+                           username=user_data["username"],
+                           discriminator=user_data["discriminator"],
+                           user_id=user_data["id"],
+                           avatar_url=avatar_url)
+
+# Optional: logout route
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("home"))
 
 if __name__ == "__main__":
     app.run(debug=True)
